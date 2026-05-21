@@ -1,1 +1,327 @@
+// ============================================================
+//  Maze Robot - FULL PROJECT (FINAL) + SERVO FLAG
+//  PIC16F877A @ 8MHz - MikroC PRO
+//  Timer0-based delay, Timer1-based servo
+// ============================================================
 
+unsigned char state;
+unsigned char START_Flag = 0;
+
+// ===================== TIMER0 DELAY =====================
+
+void MyDelay_ms(unsigned int ms){
+
+    unsigned int i;
+
+    for(i = 0; i < ms; i++){
+
+        INTCON = INTCON & 0xFB;
+        TMR0   = 6;
+
+        while(!(INTCON & 0x04));
+
+        INTCON = INTCON & 0xFB;
+    }
+}
+
+void MyDelay_us(unsigned int us){
+    unsigned int i;
+    for(i = 0; i < us; i++){
+        asm nop;
+        asm nop;
+    }
+}
+
+// ===================== INTERRUPT =====================
+
+void interrupt(){
+    if((INTCON & 0x02) == 0x02){
+        START_Flag = 1;
+        INTCON = INTCON & 0xFD;
+    }
+}
+
+// ===================== MOVE =====================
+
+void Move(unsigned char dir,
+          unsigned char speedL,
+          unsigned char speedR){
+
+    PORTD = (PORTD & 0xF0) | dir;
+    CCPR2L = speedL;
+    CCPR1L = speedR;
+}
+
+// ===================== ULTRASONIC =====================
+
+unsigned int GetDistance(unsigned char sensor){
+
+    unsigned int ticks;
+    unsigned int timeout;
+
+    T1CON = T1CON & 0xFE;
+    TMR1H = 0;
+    TMR1L = 0;
+
+    if(sensor == 1){
+        PORTD = PORTD | 0x40;
+        MyDelay_us(10);
+        PORTD = PORTD & 0xBF;
+    }
+    else if(sensor == 2){
+        PORTD = PORTD | 0x20;
+        MyDelay_us(10);
+        PORTD = PORTD & 0xDF;
+    }
+    else{
+        PORTD = PORTD | 0x80;
+        MyDelay_us(10);
+        PORTD = PORTD & 0x7F;
+    }
+
+    timeout = 0;
+    while(1){
+        if(sensor == 1 && (PORTB & 0x04)) break;
+        if(sensor == 2 && (PORTB & 0x08)) break;
+        if(sensor == 3 && (PORTB & 0x02)) break;
+        if(++timeout > 30000) return 1000;
+    }
+
+    TMR1H = 0;
+    TMR1L = 0;
+    T1CON = T1CON | 0x01;
+
+    timeout = 0;
+    while(1){
+        if(sensor == 1 && !(PORTB & 0x04)) break;
+        if(sensor == 2 && !(PORTB & 0x08)) break;
+        if(sensor == 3 && !(PORTB & 0x02)) break;
+
+        if(++timeout > 30000){
+            T1CON = T1CON & 0xFE;
+            return 1000;
+        }
+    }
+
+    T1CON = T1CON & 0xFE;
+    ticks = TMR1H * 256 + TMR1L;
+    return (unsigned int)(ticks / 116);
+}
+
+// ===================== LDR + BUZZER =====================
+
+unsigned int ReadLDR(void){
+    ADCON0 = ADCON0 | 0x04;
+    while(ADCON0 & 0x04);
+    return ADRESH * 256 + ADRESL;
+}
+
+void BuzzerOn(void){
+    PORTD = PORTD | 0x10;
+}
+
+void BuzzerOff(void){
+    PORTD = PORTD & 0xEF;
+}
+
+// ===================== SERVO (RC4) =====================
+
+void RaiseFlag(void){
+
+    unsigned char i;
+
+    for(i = 0; i < 100; i++){
+
+        // 2ms HIGH pulse using Timer1
+        // at 8MHz, Timer1 no prescaler = 0.5us per tick
+        // 2ms = 4000 ticks
+        T1CON = T1CON & 0xFE;
+        TMR1H = 0;
+        TMR1L = 0;
+        T1CON = T1CON | 0x01;
+
+        PORTC = PORTC | 0x10;
+
+        while((TMR1H * 256 + TMR1L) < 4000);
+
+        PORTC = PORTC & 0xEF;
+        T1CON = T1CON & 0xFE;
+
+        // 18ms LOW to complete 20ms period
+        MyDelay_ms(18);
+    }
+}
+
+// ===================== LINE FOLLOWING =====================
+
+void LineFollow(void){
+
+    unsigned char right, left;
+
+    right = PORTB & 0x80;
+    left  = PORTB & 0x40;
+
+    if(!right && !left){
+        Move(0x05, 90, 90);
+    }
+    else if(left && !right){
+        Move(0x09, 90, 0);
+    }
+    else if(!left && right){
+        Move(0x09, 0, 90);
+    }
+    else{
+        Move(0x09, 90, 90);
+    }
+}
+
+// ===================== ULTRASONIC MAZE =====================
+
+void SwerveLeft(void){
+    Move(0x09, 90, 105);
+    MyDelay_ms(5);
+}
+
+void SwerveRight(void){
+    Move(0x09, 105, 90);
+    MyDelay_ms(5);
+}
+
+void TurnUntilClear(unsigned char right){
+
+    unsigned char i = 0;
+
+    while(i < 28){
+        if(GetDistance(1) > 22) break;
+
+        if(right)
+            Move(0x0A, 90, 90);
+        else
+            Move(0x05, 90, 90);
+
+        MyDelay_ms(5);
+        i++;
+    }
+
+    Move(0x00, 0, 0);
+    MyDelay_ms(7);
+}
+
+void MazeNavigate(void){
+
+    unsigned int front, left, right;
+
+    right = GetDistance(2);
+    left  = GetDistance(3);
+    front = GetDistance(1);
+
+    if(front <= 27){
+        if(left > right)
+            TurnUntilClear(0);
+        else
+            TurnUntilClear(1);
+    }
+    else if(right <= 17){
+        SwerveLeft();
+    }
+    else if(left <= 17){
+        SwerveRight();
+    }
+    else{
+        Move(0x09, 95, 95);
+    }
+}
+
+// ===================== FINISH LINE CHECK =====================
+
+unsigned char SeesBlackFinish(void){
+
+    unsigned char right, left;
+
+    right = PORTB & 0x80;
+    left  = PORTB & 0x40;
+
+    if(!right && !left) return 1;
+    return 0;
+}
+
+// ===================== MAIN =====================
+
+void main(){
+
+    unsigned int ldr_value;
+
+    ADCON1 = 0x80;
+    ADCON0 = 0x41;
+    OPTION_REG = 0x82;
+
+    TRISA = 0x01;
+    TRISB = 0xFF;
+    TRISC = 0x00;
+    TRISD = 0x00;
+
+    PORTB = 0;
+    PORTC = 0;
+    PORTD = 0;
+
+    T2CON   = 0x07;
+    CCP1CON = 0x0C;
+    CCP2CON = 0x0C;
+    PR2     = 250;
+
+    T1CON = 0x00;
+    TMR0  = 6;
+
+    Move(0x00, 0, 0);
+
+    state      = 1;
+    START_Flag = 0;
+    BuzzerOff();
+
+    MyDelay_ms(500);
+
+    // clear flags then enable GIE + INTE
+    INTCON = 0x00;
+    INTCON = 0x90;
+
+    // wait for button press
+    while(!START_Flag);
+
+    // 3ms delay
+    MyDelay_ms(3000);
+
+    while(1){
+
+        // STAGE 1: LINE FOLLOWING
+        if(state == 1){
+            LineFollow();
+            ldr_value = ReadLDR();
+            if(ldr_value > 450){
+                state = 2;
+                BuzzerOn();
+            }
+        }
+
+        // STAGE 2: TUNNEL
+        else if(state == 2){
+            LineFollow();
+            BuzzerOn();
+            ldr_value = ReadLDR();
+            if(ldr_value < 400){
+                BuzzerOff();
+                state = 3;
+            }
+        }
+
+        // STAGE 3: MAZE
+        else if(state == 3){
+            MazeNavigate();
+            if(SeesBlackFinish()){
+                Move(0x00, 0, 0);
+                BuzzerOff();
+                RaiseFlag();
+                while(1);
+            }
+        }
+    }
+}
